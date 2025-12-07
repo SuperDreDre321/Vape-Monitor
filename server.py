@@ -1,11 +1,13 @@
+import os
 from flask import Flask, request, jsonify, render_template_string
 from datetime import datetime
 
 app = Flask(__name__)
 
-# In-memory storage for now
-data_points = []  # each: {"time": "...", "mq_raw": 0.123}
-MAX_POINTS = 3600  # keep last 3600 seconds (~1 hour)
+# In-memory storage for recent data points
+# each item = {"time": "HH:MM:SS", "mq_raw": 0.123}
+data_points = []
+MAX_POINTS = 3600  # keep roughly the last hour at 1 sample/sec
 
 HTML_PAGE = """
 <!DOCTYPE html>
@@ -23,7 +25,7 @@ HTML_PAGE = """
 <body>
 <div id="container">
   <h2>MQ_raw Live Graph</h2>
-  <p>Live data pushed from Raspberry Pi</p>
+  <p>Live data pushed from Raspberry Pi.</p>
   <canvas id="mqChart"></canvas>
 </div>
 
@@ -70,7 +72,7 @@ HTML_PAGE = """
     mqChart.update();
   }
 
-  // Fetch every second
+  // Fetch data every second
   setInterval(fetchData, 1000);
   fetchData();
 </script>
@@ -78,38 +80,52 @@ HTML_PAGE = """
 </html>
 """
 
+
 @app.route("/")
 def index():
-    return render_template_string(HTML_PAGE)
+  # Main page with graph
+  return render_template_string(HTML_PAGE)
 
 
 @app.route("/data")
 def get_data():
-    return jsonify(data_points)
+  # Return all recent data points as JSON
+  return jsonify(data_points)
 
 
 @app.route("/ingest", methods=["POST"])
 def ingest():
-    # Expect JSON: {"mq_raw": float, "time": optional string}
-    payload = request.get_json(silent=True) or {}
+  """
+  Endpoint for the Raspberry Pi to push data.
+  Expects JSON: { "mq_raw": float, "time": optional string }
+  """
+  payload = request.get_json(silent=True) or {}
 
-    mq_raw = payload.get("mq_raw")
-    t = payload.get("time")
+  mq_raw = payload.get("mq_raw")
+  t = payload.get("time")
 
-    if mq_raw is None:
-        return jsonify({"error": "mq_raw required"}), 400
+  if mq_raw is None:
+    return jsonify({"error": "mq_raw required"}), 400
 
-    if t is None:
-        t = datetime.utcnow().strftime("%H:%M:%S")
+  # If no time provided by the Pi, use UTC time
+  if t is None:
+    t = datetime.utcnow().strftime("%H:%M:%S")
 
-    data_points.append({"time": t, "mq_raw": float(mq_raw)})
+  try:
+    mq_raw = float(mq_raw)
+  except ValueError:
+    return jsonify({"error": "mq_raw must be a number"}), 400
 
-    # Limit memory
-    if len(data_points) > MAX_POINTS:
-        data_points.pop(0)
+  data_points.append({"time": t, "mq_raw": mq_raw})
 
-    return jsonify({"status": "ok"}), 200
+  # Keep list bounded
+  if len(data_points) > MAX_POINTS:
+    data_points.pop(0)
+
+  return jsonify({"status": "ok"}), 200
 
 
 if __name__ == "__main__":
-    app.run()
+  # Render sets PORT in the environment
+  port = int(os.environ.get("PORT", 5000))
+  app.run(host="0.0.0.0", port=port)
